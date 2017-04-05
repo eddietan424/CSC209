@@ -1,13 +1,23 @@
 #include <stdio.h>
+#include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <stdio.h>
+#include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
-
+#include <libgen.h>
+#include <netdb.h>
+#include <netinet/in.h>    /* Internet domain header */
+#include <errno.h>
+#include <signal.h>
 #include "ftree.h"
+#include "hash.h"
 
 #define MAX_BACKLOG 5
 #define MAX_CONNECTIONS 12
@@ -28,9 +38,12 @@ char *str_copy(char* src);
 char *generate_path(char *fname, char *c_name);
 void client_write_str(int sock_fd, char *buf);
 char *server_generate_copy_root(int sock_fd);
-void compute_hash(char *fname, struct request *req_ptr);
+char *compute_hash(char *fname);
 void client_write_fields(int sock_fd, struct request *req_ptr);
-void server_read_fields(int client_fd, struct request_received *rreq_ptr);
+void server_read_fields(int client_fd, struct request *rreq_ptr);
+void sendfile(char *source, char *host, unsigned short port, struct request *info);
+void load_hash_request(char *hash_val, struct request *req_ptr);
+int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd);
 
 int rcopy_client(char *source, char *host, unsigned short port) {
 	// Create the socket FD.
@@ -56,7 +69,103 @@ int rcopy_client(char *source, char *host, unsigned short port) {
 		close(sock_fd);
 		exit(1);
 	}
+	int r = rcopy_client_body(source, host, port, sock_fd);
+	close(sock_fd);
+	return r;
+}
+
+/* The body part of rcopy_client in order to use recursion.
+ */
+int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd) {
 	
+	//source information.
+	struct stat src_info;
+	int src_status = lstat(source, &src_info);
+	
+	//if not exist, should exit
+	if (src_status < 0) {
+		perror("lstat");
+		exit(1);		
+	}
+	
+	// flag to recognize the prefix.
+	static int flag_prefix = 0;
+	static char prefix_dir[MAXPATH];
+	
+	// the case we the prefix.
+	if (flag_prefix) {
+		// change the flag and 
+		flag_prefix = 1;
+		char new_source[MAXPATH];
+		strncpy(new_source, source, strlen(source) + 1);
+		char *directory_name = extract_name(new_source);
+		prefix_dir[strlen(directory_name)] = '\0';				
+	}
+	
+	//char *relative_path;
+	//relative_path = generate_path(CURRENT_WORKING_DIR, basename);
+	
+	// allocate memory for request struct.
+	char * basename = extract_name(source);
+	char *relative_path;
+	relative_path = generate_path(CURRENT_WORKING_DIR, basename);
+	struct request *info = malloc(sizeof(struct request));
+	strcpy(info->path, relative_path);
+	
+	// Recursive case:If source is a directory
+	if (S_ISDIR(src_info.st_mode)) {
+		info->size = 0;
+		info->type = REGDIR;
+		
+		// write to server.
+		client_write_fields(sock_fd, info);
+		
+		struct dirent *dp;
+		DIR * dirp = opendir(source);
+		
+		//Check for open.
+		if (dirp == NULL) {
+			perror("opendir");
+			exit(1);
+		}
+		
+		dp = readdir(dirp);
+		while (dp != NULL) {
+			if (dp->d_name[0] != '.') {
+				char* path = generate_path(source, dp->d_name);
+				rcopy_client_body(path, host, port, sock_fd);
+				free(path);
+			}
+			dp = readdir(dirp);
+		}
+	// Base case: If source is a file.
+	} else if (S_ISREG(src_info.st_mode)) {
+		struct stat buf;
+		stat(source, &buf);
+		info->size = buf.st_size;
+		info->type = REGFILE;
+		strcpy(info->hash, compute_hash(source));
+		client_write_fields(sock_fd, info);
+		
+		int request_status;
+		int num_read = read(sock_fd, &request_status, sizeof(int));
+		if (num_read == 0){
+			exit(1);
+		}
+		
+		switch (request_status) {
+		case ERROR:
+			perror("request");
+		case OK: break;
+		case SENDFILE:
+			info->type = TRANSFILE;
+			sendfile(source, host, port, info);
+		}
+	}
+	free(info);
+	return 0;
+
+/* 	
 	// Tell server the basename of input source file/ dir
 	char *basename = extract_name(source);
 	printf("basename: %s\n", basename);
@@ -81,107 +190,85 @@ int rcopy_client(char *source, char *host, unsigned short port) {
 	} else {
 		n = MAXPATH - 1;
 	}
-	strncpy(req_ptr->path, basename, n);
-	req_ptr->path[n] = '\0';
-	free(basename);
-	if (S_ISREG(src_stat.st_mode)) { // a regular file
-		req_ptr->type = REGFILE;
-		compute_hash(ori_path, req_ptr);
-	} else if (S_ISDIR(src_stat.st_mode)) { // a directory
-		req_ptr->type = REGDIR;
-		for (int i = 0; i < BLOCK_SIZE; i++) {
-			req_ptr->hash[i] = '\0';
-		}
-	} else {
-		exit(1);
-	}
+	//strncpy(req_ptr->path, basename, n);
+	//req_ptr->path[n] = '\0';
+	//free(basename);
+	//if (S_ISREG(src_stat.st_mode)) { // a regular file
+		//req_ptr->type = REGFILE;
+		//compute_hash(ori_path, req_ptr);
+	//} else if (S_ISDIR(src_stat.st_mode)) { // a directory
+		//req_ptr->type = REGDIR;
+		//for (int i = 0; i < BLOCK_SIZE; i++) {
+			//req_ptr->hash[i] = '\0';
+		//}
+	//} else {
+		//exit(1);
+	//}
 	
 	// Send the request
 	client_write_fields(sock_fd, req_ptr);
 	
-	while (1) {
-	}
+	//while (1) {
+	//}
 	
 	close(sock_fd);
-	return 0;
+	//return 0; */
 }
 
-void rcopy_server(unsigned short port) {
-	
-	// Create the socket FD.
-	int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (sock_fd < 0) {
-		perror("server: socket");
+void sendfile(char *source, char *host, unsigned short port, struct request *info) {
+	int result = fork();
+	if (result < 0) {
+		perror("fork");
 		exit(1);
 	}
 	
-	// Set information about the port (and IP) we want to be connected to.
-	struct sockaddr_in server;
-	server.sin_family = AF_INET;
-	server.sin_port = htons(port);
-	server.sin_addr.s_addr = INADDR_ANY;
+	// child process: we need to transfer the file.
+	else if (result == 0) {
+		int child_socket = socket(AF_INET, SOCK_STREAM, 0);
+		
+		// error check.
+		if (child_socket < 0) {
+			perror("socket");
+			exit(1);
+		}
+		
+		struct sockaddr_in server;
+		server.sin_family = AF_INET;
+		server.sin_port = htons(port);
+		
+		if (inet_pton(AF_INET, host, &server.sin_addr) < 1) {
+			perror("client: inet_pton");
+			close(child_socket);
+		} 
+		
+		if (connect(child_socket, (struct sockaddr *)&server, sizeof(server)) < 0) {
+			perror("client: connect");
+			close(child_socket);
+			exit(1);
+		}
+		
+		client_write_fields(child_socket, info);
+		
+		FILE* fp = fopen(source, "r");
+		char buf[MAXDATA];
+		int num_read;
+		while ((num_read = fread(buf, 1, MAXDATA, fp)) < 0) {
+			if (write(child_socket, buf, num_read) != num_read) {
+				perror("write");
+				exit(1);
+			}
+		
+		}
+		close(child_socket);
+	} else if (result > 0) {
+		int status;
+		if (wait(&status) == -1) {
+			perror("wait");
+			exit(1);
+		}
 	
-	// This should always be zero. On some systems, it won't error if you
-	// forget, but on others, you'll get mysterious errors. So zero it.
-	memset(&server.sin_zero, 0, 8);
 	
-	// Bind the selected port to the socket.
-	if (bind(sock_fd, (struct sockaddr *)&server, sizeof(server)) < 0) {
-		perror("server: bind");
-		close(sock_fd);
-		exit(1);
 	}
-	
-	// Announce willingness to accept connections on this socket.
-	if (listen(sock_fd, MAX_BACKLOG) < 0) {
-		perror("server: listen");
-		close(sock_fd);
-		exit(1);
-	}
-//	
-//	// The client accept - message accept loop. First, we prepare to listen to multiple
-//	// file descriptors by initializing a set of file descriptors.
-//	int max_fd = sock_fd;
-//	fd_set all_fds, listen_fds;
-//	FD_ZERO(&all_fds);
-//	FD_SET(sock_fd, &all_fds);
-	
-	while (1) {
-//		// select updates the fd_set it receives, so we always use a copy and retain the original.
-//		listen_fds = all_fds;
-//		int nready = select(max_fd + 1, &listen_fds, NULL, NULL, NULL);
-//		if (nready == -1) {
-//			perror("server: select");
-//			exit(1);
-//		}
-//		
-//		// Is it the original socket? Create a new connection ...
-//		if (FD_ISSET(sock_fd, &listen_fds)) {
-			int client_fd = accept_connection(sock_fd);
-//			if (client_fd > max_fd) {
-//				max_fd = client_fd;
-//			}
-//			FD_SET(client_fd, &all_fds);
-			printf("Accepted connection\n");
-			fprintf(stderr, "path: %s\n", server_generate_copy_root(client_fd));
-			
-//		}
-	}
-}
-
-/* Accept a connection. Note that a new file descriptor is created for
- * communication with the client. The initial socket descriptor is used
- * to accept connections, but the new socket is used to communicate.
- * Return the new client's file descriptor.
- */
-int accept_connection(int fd) {
-	int client_fd = accept(fd, NULL, NULL);
-	if (client_fd < 0) {
-		perror("server: accept");
-		close(fd);
-		exit(1);
-	}
-	return client_fd;
 }
 
 /*
@@ -314,7 +401,7 @@ char *server_generate_copy_root(int sock_fd) {
  * Compute the hash for file at path fname with correponding request 
  * at req_ptr.
  */
-void compute_hash(char *fname, struct request *req_ptr) {
+char* compute_hash(char *fname) {
 	
 	// Open file
 	FILE *f;
@@ -325,16 +412,26 @@ void compute_hash(char *fname, struct request *req_ptr) {
 	
 	// Compute hash
 	char *hash_val = hash(f);
-	for (int i = 0; i < BLOCK_SIZE; i++) {
-		req_ptr->hash[i] = hash_val[i];
-	}
-	free(hash_val);
+	//for (int i = 0; i < BLOCK_SIZE; i++) {
+	//	req_ptr->hash[i] = hash_val[i];
+	//}
+	//free(hash_val);
 	
 	// Close file
 	if (fclose(f) != 0) {
 		perror(fname);
 		exit(1);
 	}
+	return hash_val;
+}
+/* 
+ */
+
+void load_hash_request(char *hash_val, struct request *req_ptr) {
+	for (int i = 0; i < BLOCK_SIZE; i++) {
+		req_ptr->hash[i] = hash_val[i];
+	}
+
 }
 
 /*
@@ -383,47 +480,4 @@ void client_write_fields(int sock_fd, struct request *req_ptr) {
 		close(sock_fd);
 		exit(1);
 	}
-}
-
-/*
- * Server reads all fields of request to req_ptr from a socket descriptor.
- */
-void server_read_fields(int client_fd, struct request_received *rreq_ptr) {
-	int bytes_read = sizeof(uint32_t) * 2 + MAXPATH + sizeof(mode_t) + BLOCK_SIZE;
-//	void buf[bytes_read];
-//	fprintf(stderr, "read fields not start");
-//	int num_read = read(client_fd, &buf, bytes_read);
-//	fprintf(stderr, "read fields");
-//	if (num_read == 0) {
-//		perror("server: read");
-//		close(client_fd);
-//		exit(1);
-//	}
-	
-	rreq_ptr->state = AWAITING_TYPE;
-	switch (rreq_ptr->state) {
-  		case AWAITING_TYPE:
-			
-			break;
-			
-		case AWAITING_PATH:
-			
-			break;
-			
-		case AWAITING_PERM:
-			
-			break;
-			
-		case AWAITING_HASH:
-			
-			break;
-			
-		case AWAITING_SIZE:
-			
-			break;
-			
-		default: // should not get here
-			break;
-	}
-	
 }

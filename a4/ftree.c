@@ -14,13 +14,12 @@
 #define BUF_SIZE 128
 #define CURRENT_WORKING_DIR "./"
 
-struct request_received {
-	int type;           // Request type is REGFILE, REGDIR, TRANSFILE
-	char path[MAXPATH];
-	mode_t mode;
-	char hash[BLOCK_SIZE];
-	int size;
-	int state;
+struct client {
+	int fd;
+	FILE* fp;
+	struct request req;
+	int status;
+	struct client *next;
 };
 
 int accept_connection(int fd);

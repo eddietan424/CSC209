@@ -28,6 +28,7 @@ struct client {
 	int fd;
 	FILE* fp;
 	struct request req;
+	struct in_addr ipaddr;
 	int status;
 	struct client *next;
 };
@@ -115,7 +116,7 @@ int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd
 	//relative_path = generate_path(CURRENT_WORKING_DIR, basename);
 	
 	// allocate memory for request struct.
-	char * basename = extract_name(source);
+	char *basename = extract_name(source);
 	char *relative_path;
 	relative_path = generate_path(CURRENT_WORKING_DIR, basename);
 	struct request *info = malloc(sizeof(struct request));
@@ -278,98 +279,6 @@ void sendfile(char *source, char *host, unsigned short port, struct request *inf
 	
 	
 	}
-}
-
-/*
- * Extract the basename part in the path fname and return that name.
- * Note: reuse part of my A3 helper function extract_name
- *
- * Precondition: fname is a valid path
- */
-char *extract_name(char *fname) {
-	
-	// If fname does not have slash, itself is already a basename
-	char *first_occur = strchr(fname, '/');
-	if (first_occur == NULL) {
-		return str_copy(fname);
-	}
-	
-	// Deal with the path that has slash(es)
-	char *result = NULL;
-	char *temp = str_copy(fname);
-	
-	// Get rid of trailing slash(es) except when it occurs also as the
-	// first character in the path
-	int j = strlen(fname) - 1;
-	while (j > 0 && temp[j] == '/') {
-		temp[j] = '\0';
-		j--;
-	}
-	
-	// Mark the start of the basename part in path temp
-	char *name_start = strrchr(temp, '/');
-	if (name_start == NULL) {
-		name_start = temp;
-	} else if (name_start[1] != '\0') {
-		name_start += 1;
-	}
-	result = str_copy(name_start);
-	
-	// Free memory of no further use and return result
-	free(temp);
-	return result;
-}
-
-/*
- * Return a copy of given source string src.
- * Note: reuse part of my A3 helper function str_copy
- */
-char *str_copy(char* src) {
-	int length = strlen(src);
-	char *result = malloc(sizeof(char) * (length + 1));
-	memcpy(result, src, length);
-	result[length] = '\0';
-	return result;
-}
-
-/*
- * Return the path for a child directory or file using the path of its parent
- * directory and the name of that child directory/ file.
- *
- * Precondition: fname is a valid path representing a directory
- * Note: reuse A3 generate_path function
- */
-char *generate_path(char *fname, char *c_name) {
-	
-	// Allocate memory for path
-	int p_size = sizeof(char) * (strlen(fname) + strlen(c_name) + 2);
-	char *path = malloc(p_size);
-	
-	// Make path a string so that we can use string operations
-	path[0] = '\0';
-	
-	// We have allocated enough memory, so we don't need
-	// to use strncpy and strncat here
-	// And we also deal with the trailing slashes for path fname
-	strcpy(path, fname);
-	int i = strlen(fname) - 1;
-	while (i > 0 && path[i] == '/') {
-		path[i] = '\0';
-		i--;
-	}
-	
-	// If parent dir is root directory for the OS, i.e. now what is already
-	// concatenated to the path is a single /,
-	// then we don't need to concatenate slash any more
-	if (path[strlen(path) - 1] != '/') {
-		strcat(path, "/");
-	}
-	
-	// strcat ensures null terminator and we allocated enough memory
-	strcat(path, c_name);
-	
-	// Return the path
-	return path;
 }
 
 /*
@@ -575,6 +484,7 @@ static struct client *addclient(struct client *top, int fd, struct in_addr addr)
     p->fd = fd;
     p->ipaddr = addr;
     p->next = top;
+	p->fp = NULL;
     top = p;
     return top;
 }
@@ -767,7 +677,7 @@ int handleclient(struct client *p, struct client *top) {
 		p->status = AWAITING_HASH;
 	} break;
 	case AWAITING_HASH: {
-		if (read(p->fd, p->req.hash, BLOCKSIZE) != BLOCKSIZE){
+		if (read(p->fd, p->req.hash, BLOCK_SIZE) != BLOCK_SIZE){
 			perror("server: load hash");
 			return -1;
 		}
@@ -789,7 +699,6 @@ int handleclient(struct client *p, struct client *top) {
 			p->status = AWAITING_TYPE;
 		} break;
 		case TRANSFILE: {
-// 			handleclient_tfile(p);
 			p->status = AWAITING_DATA;
 		} break;
 		}
@@ -806,7 +715,7 @@ void check_REGFILE(struct client *p) {
 	int response;
 	int result;
 	if ((result = need_send_file(p)) == 0) { // need
-		reponse = SENDFILE;
+		response = SENDFILE;
 	} else if (result == 1){ // OK
 		response = OK;
 	} else {
@@ -830,27 +739,33 @@ int need_send_file(struct client *p) {
 	
 	// Check existence
 	struct stat local_stat;
-	int exist = lstat(p->path, &local_stat);
+	int exist = lstat(p->req.path, &local_stat);
 	if (exist < 0) {
-		 return 0;
+		return 0;
+	}
+	
+	// Change permission
+	if (chmod(p->req.path, p->req.mode) != 0) {
+		perror("chmod");
+		exit(1);
 	}
 	
 	// Check whether incompatible type
-	if ((S_ISREG(local_stat.st_mode) && p->type == REGDIR)
-		|| (S_ISDIR(local_stat.st_mode) && p->type == REGFILE)) {
+	if ((S_ISREG(local_stat.st_mode) && p->req.type == REGDIR)
+		|| (S_ISDIR(local_stat.st_mode) && p->req.type == REGFILE)) {
 		fprintf(stderr, "server: find incompatible type");
 		return -1;
 	}
 	
 	// Already exists, check whether same
 	// compare size
-	if (local_stat.st_size != p->size) {
+	if (local_stat.st_size != p->req.size) {
 		return 0;
 	}
 	
 	// compare hash
-	char *local_hash = compute_hash(p->path);
-	if ((check_hash(local_hash, p->hash)) == 1) {
+	char *local_hash = compute_hash(p->req.path);
+	if ((check_hash(local_hash, p->req.hash)) == 1) {
 		return 0;
 	}
 	
@@ -861,27 +776,30 @@ int need_send_file(struct client *p) {
 void check_REGDIR(struct client *p) {
 	
 	// Check existence
-	DIR *dirp;
 	struct stat local_stat;
-	int exist = lstat(p->path, &local_stat);
+	int exist = lstat(p->req.path, &local_stat);
 	if (exist >= 0) {
+		if (chmod(p->req.path, p->req.mode) != 0) {
+			perror("chmod");
+			exit(1);
+		}
 		return;
 	}
 	
-	if ((mkdir(p->path, p->mode)) != 0) {
+	if ((mkdir(p->req.path, p->req.mode)) != 0) {
 		perror("server: mkdir");
 		exit(1);
 	}
 }
 
 int process_data(struct client *p) {
-	if (p->size == 0) {
+	if (p->req.size == 0) {
 		return 0;
 	}
 	
-	char buf[MAX_DATA];
+	char buf[MAXDATA];
 	int num_read;
-	if ((num_read = read(p->fd, buf, MAX_DATA)) <= 0) {
+	if ((num_read = read(p->fd, buf, MAXDATA)) <= 0) {
 		perror("server: process data");
 		return -1;
 	}
@@ -890,4 +808,6 @@ int process_data(struct client *p) {
 		perror("fwrite");
 		return -1;
 	}
+	
+	return 0;
 }

@@ -29,6 +29,9 @@ char *str_copy(char* src);
 char *generate_path(char *fname, char *c_name);
 void client_write_str(int sock_fd, char *buf);
 char *server_generate_copy_root(int sock_fd);
+void compute_hash(char *fname, struct request *req_ptr);
+void client_write_fields(int sock_fd, struct request *req_ptr);
+void server_read_fields(int client_fd, struct request_received *rreq_ptr);
 
 int rcopy_client(char *source, char *host, unsigned short port) {
 	// Create the socket FD.
@@ -74,10 +77,10 @@ int rcopy_client(char *source, char *host, unsigned short port) {
 	struct request *req_ptr = &req;
 	req_ptr->path[0] = '\0';
 	int n = 0;
-	if (MAX_PATH - 1 > strlen(basename)) {
+	if (MAXPATH - 1 > strlen(basename)) {
 		n = strlen(basename);
 	} else {
-		n = MAX_PATH - 1;
+		n = MAXPATH - 1;
 	}
 	strncpy(req_ptr->path, basename, n);
 	req_ptr->path[n] = '\0';
@@ -95,7 +98,7 @@ int rcopy_client(char *source, char *host, unsigned short port) {
 	}
 	
 	// Send the request
-	client_write_fields(int sock_fd, struct request *req_ptr);
+	client_write_fields(sock_fd, req_ptr);
 	
 	while (1) {
 	}
@@ -331,7 +334,7 @@ void compute_hash(char *fname, struct request *req_ptr) {
 	// Close file
 	if (fclose(f) != 0) {
 		perror(fname);
-		exit(1));
+		exit(1);
 	}
 }
 
@@ -350,8 +353,8 @@ void client_write_fields(int sock_fd, struct request *req_ptr) {
 	}
 	
 	// Write path
-	int num_written_path = write(sock_fd, req_ptr->path, MAX_PATH);
-	if (num_written_path != MAX_PATH) {
+	int num_written_path = write(sock_fd, req_ptr->path, MAXPATH);
+	if (num_written_path != MAXPATH) {
 		perror("client: write path");
 		close(sock_fd);
 		exit(1);
@@ -367,7 +370,7 @@ void client_write_fields(int sock_fd, struct request *req_ptr) {
 	
 	// Write hash
 	int num_written_hash = write(sock_fd, req_ptr->hash, BLOCK_SIZE);
-	if (num_written_hash != MAX_PATH) {
+	if (num_written_hash != MAXPATH) {
 		perror("client: write path");
 		close(sock_fd);
 		exit(1);
@@ -387,19 +390,18 @@ void client_write_fields(int sock_fd, struct request *req_ptr) {
  * Server reads all fields of request to req_ptr from a socket descriptor.
  */
 void server_read_fields(int client_fd, struct request_received *rreq_ptr) {
-	int bytes_read = sizeof(uint32_t) * 2 + MAX_PATH + sizeof(mode_t) + BLOCK_SIZE;
-	void buf[bytes_read];
-	fprintf(stderr, "read fields not start");
-	int num_read = read(client_fd, &buf, bytes_read);
-	fprintf(stderr, "read fields");
-	if (num_read == 0) {
-		perror("server: read");
-		close(sock_fd);
-		exit(1);
-	}
+	int bytes_read = sizeof(uint32_t) * 2 + MAXPATH + sizeof(mode_t) + BLOCK_SIZE;
+//	void buf[bytes_read];
+//	fprintf(stderr, "read fields not start");
+//	int num_read = read(client_fd, &buf, bytes_read);
+//	fprintf(stderr, "read fields");
+//	if (num_read == 0) {
+//		perror("server: read");
+//		close(client_fd);
+//		exit(1);
+//	}
 	
-	struct request_received rreq = {.state =  AWAITING_TYPE};
-	struct request_received *rreq_ptr = &rreq;
+	rreq_ptr->state = AWAITING_TYPE;
 	switch (rreq_ptr->state) {
   		case AWAITING_TYPE:
 			
@@ -420,8 +422,6 @@ void server_read_fields(int client_fd, struct request_received *rreq_ptr) {
 		case AWAITING_SIZE:
 			
 			break;
-			
-		case
 			
 		default: // should not get here
 			break;

@@ -286,7 +286,7 @@ void sendfile(char *source, char *host, unsigned short port, struct request *inf
 		
 		char buf[MAXDATA];
 		int num_read;
-		while ((num_read = fread(buf, 1, MAXDATA, fp)) < 0) {
+		while ((num_read = fread(buf, 1, MAXDATA, fp)) > 0) {
 			if (write(child_socket, buf, num_read) != num_read) {
 				perror("write");
 				exit(1);
@@ -343,9 +343,9 @@ void load_hash_request(char *hash_val, struct request *req_ptr) {
 void client_write_fields(int sock_fd, struct request *req_ptr) {
 	EPRINTF("\n");
 	// Write type
-	uint32_t neto_type = htonl(req_ptr->type);
-	int num_written_type = write(sock_fd, &neto_type, sizeof(uint32_t));
-	if (num_written_type != sizeof(uint32_t)) {
+	int neto_type = htonl(req_ptr->type);
+	int num_written_type = write(sock_fd, &neto_type, sizeof(int));
+	if (num_written_type != sizeof(int)) {
 		perror("client: write type");
 		close(sock_fd);
 		exit(1);
@@ -376,9 +376,9 @@ void client_write_fields(int sock_fd, struct request *req_ptr) {
 	}
 	
 	// Write size
-	uint32_t neto_size = htonl(req_ptr->size);
-	int num_written_size = write(sock_fd, &neto_size, sizeof(uint32_t));
-	if (num_written_size != sizeof(uint32_t)) {
+	int neto_size = htonl(req_ptr->size);
+	int num_written_size = write(sock_fd, &neto_size, sizeof(int));
+	if (num_written_size != sizeof(int)) {
 		perror("client: write size");
 		close(sock_fd);
 		exit(1);
@@ -748,9 +748,9 @@ void check_REGFILE(struct client *p) {
 	}
 	
 	// Send response to client
-	uint32_t net_uint = htonl(response);
-	int num_written = write(p->fd, &net_uint, sizeof(uint32_t));
-	if (num_written != sizeof(uint32_t)) {
+	int net_uint = htonl(response);
+	int num_written = write(p->fd, &net_uint, sizeof(int));
+	if (num_written != sizeof(int)) {
 		perror("server: write response");
 		close(p->fd);
 		exit(1);

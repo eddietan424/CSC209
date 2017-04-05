@@ -83,38 +83,65 @@ int process_data(struct client *p);
 
 int rcopy_client(char *source, char *host, unsigned short port) {
 	
-	// Create the socket FD.
-	int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (sock_fd < 0) {
-		perror("client: socket");
-		exit(1);
-	}
+// 	// Create the socket FD.
+// 	int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+// 	if (sock_fd < 0) {
+// 		perror("client: socket");
+// 		exit(1);
+// 	}
+// 	
+// 	// Set the IP and port of the server to connect to.
+// 	struct sockaddr_in server;
+// 	server.sin_family = AF_INET;
+// 	struct hostent *hp;
+// 	
+// 	hp = gethostbyname(host);                
+//     if (hp == NULL) {  
+//         fprintf(stderr, "unknown host\n");
+//         exit(1);
+//     }
+// 
+//     server.sin_addr = *((struct in_addr *)hp->h_addr);
+// 	
+// 	server.sin_port = htons(port);
+// 	if (inet_pton(AF_INET, host, &server.sin_addr) < 1) {
+// 		perror("client: inet_pton");
+// 		close(sock_fd);
+// 		exit(1);
+// 	}
+// 	
+// 	// Connect to the server.
+// 	if (connect(sock_fd, (struct sockaddr *)&server, sizeof(server)) == -1) {
+// 		perror("client: connect");
+// 		close(sock_fd); /* fill in peer address */
+// 	}
 	
-	// Set the IP and port of the server to connect to.
-	struct sockaddr_in server;
-	server.sin_family = AF_INET;
-	
+	int sock_fd;
 	struct hostent *hp;
-	hp = gethostbyname(host);                
-    if ( hp == NULL ) {  
-        fprintf(stderr, "unknown host\n");
+    struct sockaddr_in peer;
+
+    peer.sin_family = AF_INET;
+    peer.sin_port = htons(port);
+
+    /* fill in peer address */
+    hp = gethostbyname(host);                
+    if (hp == NULL) {  
+        fprintf(stderr, "%s: unknown host\n", host);
         exit(1);
     }
 
-    server.sin_addr = *((struct in_addr *)hp->h_addr);
-	
-	server.sin_port = htons(port);
-	if (inet_pton(AF_INET, host, &server.sin_addr) < 1) {
-		perror("client: inet_pton");
-		close(sock_fd);
-		exit(1);
+    peer.sin_addr = *((struct in_addr *)hp->h_addr);
+
+    /* create socket */
+    if((sock_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+		perror("socket");
 	}
-	
-	// Connect to the server.
-	if (connect(sock_fd, (struct sockaddr *)&server, sizeof(server)) == -1) {
-		perror("client: connect");
-		close(sock_fd); /* fill in peer address */
-	}
+    /* request connection to server */
+    if (connect(sock_fd, (struct sockaddr *)&peer, sizeof(peer)) == -1) {  
+        perror("client:connect"); close(sock_fd);
+        exit(1); 
+    }
+    
 	char *basename = extract_name(source);
 // 	char *relative_path;
 // 	relative_path = generate_path(CURRENT_WORKING_DIR, basename);
@@ -137,7 +164,7 @@ int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd
 		perror("lstat");
 		exit(1);		
 	}
-	
+/*	
 	// flag to recognize the prefix.
 	static int flag_prefix = 0;
 	static char prefix_dir[MAXPATH];
@@ -151,10 +178,10 @@ int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd
 		char *directory_name = extract_name(new_source);
 		prefix_dir[strlen(directory_name)] = '\0';				
 	}
-	
+	*/
 // 	// allocate memory for request struct.
 //     char relative_path[MAXPATH];
-//     build_relative_path(relative_path, prefix_dir, source);
+// //     build_relative_path(relative_path, prefix_dir, source);
 	struct request *info = malloc(sizeof(struct request));
 	strcpy(info->path, source);
 	info->mode = src_info.st_mode;
@@ -773,43 +800,56 @@ int need_send_file(struct client *p) {
 
 void check_REGDIR(struct client *p) {
 	EPRINTF("%s %04o\n", p->req.path, p->req.mode);
-// 	int exist;
-	DIR* dir = opendir("mydir");
-	if (dir)
-	{
-		if (chmod(p->req.path, p->req.mode) != 0) {
-			perror("chmod");
-			exit(1);
-		}
-		/* Directory exists. */
-		closedir(dir);
-	}
-	else if (ENOENT == errno)
-	{
-// 		if (exist < 0) {
-		if (mkdir(p->req.path, p->req.mode) != 0) {
-			perror("server: mkdir");
-			exit(1);
-		}
+// // 	int exist;
+// 	DIR* dir = opendir("mydir");
+// 	if (dir)
+// 	{
 // 		if (chmod(p->req.path, p->req.mode) != 0) {
 // 			perror("chmod");
 // 			exit(1);
 // 		}
+// 		/* Directory exists. */
+// 		closedir(dir);
+// 	}
+// 	else if (ENOENT == errno)
+// 	{
+// // 		if (exist < 0) {
+// 		if (mkdir(p->req.path, p->req.mode) != 0) {
+// 			perror("server: mkdir");
+// 			exit(1);
+// 		}
+// // 		if (chmod(p->req.path, p->req.mode) != 0) {
+// // 			perror("chmod");
+// // 			exit(1);
+// // 		}
+// 	
+//     /* Directory does not exist. */
+// 	}
+// 	else
+// 	{
+//     /* opendir() failed for some other reason. */
+// 	}
+// 	
+	//Check existence
+	struct stat local_stat;
+	printf("before lstat\n");
+	int exist = lstat(p->req.path, &local_stat);
+	printf("after lstat\n");
+	printf("%s\n", p->req.path);
 	
-    /* Directory does not exist. */
+	if (exist < 0) {
+		if (mkdir(p->req.path, p->req.mode) != 0) {
+			perror("server: mkdir");
+			exit(1);
+		}
 	}
-	else
-	{
-    /* opendir() failed for some other reason. */
-	}
 	
-	// Check existence
-// 	struct stat local_stat;
-// 	printf("before lstat\n");
-// 	int exist = lstat(p->req.path, &local_stat);
-// 	printf("after lstat\n");
-// 	printf("%s\n", p->req.path);
-	
+	if (chmod(p->req.path, p->req.mode) != 0) {
+			perror("chmod");
+			exit(1);
+		}
+		/* Directory exists. */
+
 }
 
 int process_data(struct client *p) {

@@ -19,9 +19,6 @@
 #include "ftree.h"
 #include "hash.h"
 
-#define MAX_BACKLOG 5
-#define MAX_CONNECTIONS 12
-#define BUF_SIZE 128
 #define CURRENT_WORKING_DIR "./"
 
 #if 0
@@ -33,21 +30,24 @@
 	}while(0)
 #endif
 
+/*
+ * Structure for client side file.
+ */
 struct client {
-	int fd;
-	struct request req;
-	struct in_addr ipaddr;
-	int status;
-	struct client *next;
-	FILE* fp;
+	int fd; // corresponding socket descriptor
+	struct request req; // request from client side
+	struct in_addr ipaddr; // ip address
+	int status; // status for processing this client
+	struct client *next; // the next client struct in the server linked list
+	FILE* fp; // correponding server side file open for writing
 };
 
 int accept_connection(int fd);
 char *extract_name(char *fname);
 char *str_copy(char* src);
 char *generate_path(char *fname, char *c_name);
-void client_write_str(int sock_fd, char *buf);
-char *server_generate_copy_root(int sock_fd);
+// void client_write_str(int sock_fd, char *buf);
+// char *server_generate_copy_root(int sock_fd);
 char *compute_hash(char *fname);
 void client_write_fields(int sock_fd, struct request *req_ptr);
 void server_read_fields(int client_fd, struct request *rreq_ptr);
@@ -63,24 +63,11 @@ void check_REGFILE(struct client *p);
 int need_send_file(struct client *p);
 void check_REGDIR(struct client *p);
 int process_data(struct client *p);
-// void build_relative_path(char *new_path, char *prefix, char *source);
-// 
-// 
-// void build_relative_path(char *new_path, char *prefix, char *source){
-// 	 int index = strlen(prefix);
-//     strncpy(new_path, ".", 1);
-//     new_path[1] = '\0';
-//     int i = 1;
-//     while(source[index] != '\0') {
-//     	new_path[i] = source[index];
-//     	i++;
-//     	index++;
-// 		if (exist < 0) {
-//     }
-//     new_path[i]= '\0';
-//     printf("relative path: %s\n", new_path);
-// 	
-// }
+
+/*
+ * Set up socket connection.
+ * Note: reuse part of lecture codes
+ */
 int socket_connect(char *host, unsigned short port) {
 	int sock_fd;
 	struct hostent *hp;
@@ -110,52 +97,21 @@ int socket_connect(char *host, unsigned short port) {
 	return sock_fd;
 }
 
+/* 
+ * Client side for the rcopy program.
+ */
 int rcopy_client(char *source, char *host, unsigned short port) {
 	
-// 	// Create the socket FD.
-// 	int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-// 	if (sock_fd < 0) {
-// 		perror("client: socket");
-// 		exit(1);
-// 	}
-// 	
-// 	// Set the IP and port of the server to connect to.
-// 	struct sockaddr_in server;
-// 	server.sin_family = AF_INET;
-// 	struct hostent *hp;
-// 	
-// 	hp = gethostbyname(host);                
-//     if (hp == NULL) {  
-//         fprintf(stderr, "unknown host\n");
-//         exit(1);
-//     }
-// 
-//     server.sin_addr = *((struct in_addr *)hp->h_addr);
-// 	
-// 	server.sin_port = htons(port);
-// 	if (inet_pton(AF_INET, host, &server.sin_addr) < 1) {
-// 		perror("client: inet_pton");
-// 		close(sock_fd);
-// 		exit(1);
-// 	}
-// 	
-// 	// Connect to the server.
-// 	if (connect(sock_fd, (struct sockaddr *)&server, sizeof(server)) == -1) {
-// 		perror("client: connect");
-// 		close(sock_fd); /* fill in peer address */
-// 	}
 	int sock_fd = socket_connect(host, port);
     
 	char *basename = extract_name(source);
-// 	char *relative_path;
-// 	relative_path = generate_path(CURRENT_WORKING_DIR, basename);
-// 	free(basename);
 	int r = rcopy_client_body(basename, host, port, sock_fd);
 	close(sock_fd);
 	return r;
 }
 
-/* The body part of rcopy_client in order to use recursion.
+/* 
+ * The implementation of rcopy_client in order to use recursion.
  */
 int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd) {
 	
@@ -168,24 +124,7 @@ int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd
 		perror("lstat");
 		exit(1);		
 	}
-/*	
-	// flag to recognize the prefix.
-	static int flag_prefix = 0;
-	static char prefix_dir[MAXPATH];
-	
-	// the case we the prefix.
-	if (flag_prefix) {
-		// change the flag and 
-		flag_prefix = 1;
-		char new_source[MAXPATH];
-		strncpy(new_source, source, strlen(source) + 1);
-		char *directory_name = extract_name(new_source);
-		prefix_dir[strlen(directory_name)] = '\0';				
-	}
-	*/
-// 	// allocate memory for request struct.
-//     char relative_path[MAXPATH];
-// //     build_relative_path(relative_path, prefix_dir, source);
+
 	struct request *info = malloc(sizeof(struct request));
 	strcpy(info->path, source);
 	info->mode = src_info.st_mode;
@@ -220,10 +159,10 @@ int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd
 			}
 			dp = readdir(dirp);
 		}
+		
 	// Base case: If source is a file.
 	} else if (S_ISREG(src_info.st_mode)) {
-// 		struct stat buf;
-// 		stat(source, &buf);
+
 		info->size = src_info.st_size;
 		info->type = REGFILE;
 		memcpy(info->hash, compute_hash(source), BLOCK_SIZE);
@@ -252,6 +191,9 @@ int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd
 
 }
 
+/*
+ * Send the information about file at source to a pointer to request.
+ */
 void sendfile(char *source, char *host, unsigned short port, struct request *info) {
 	int result = fork();
 	if (result < 0) {
@@ -267,6 +209,7 @@ void sendfile(char *source, char *host, unsigned short port, struct request *inf
 		
 		FILE* fp = fopen(source, "r");
 		
+		// read the fp to buf.
 		char buf[MAXDATA];
 		int num_read;
 		while ((num_read = fread(buf, 1, MAXDATA, fp)) > 0) {
@@ -277,6 +220,8 @@ void sendfile(char *source, char *host, unsigned short port, struct request *inf
 		
 		}
 		close(child_socket);
+		
+	// Parent process: wait for child
 	} else if (result > 0) {
 		int status;
 		if (wait(&status) == -1) {
@@ -287,8 +232,8 @@ void sendfile(char *source, char *host, unsigned short port, struct request *inf
 }
 
 /*
- * Compute the hash for file at path fname with correponding request 
- * at req_ptr.
+ * Compute the hash for file at path fname.
+ * Precondition: fname is a valid path for a file.
  */
 char* compute_hash(char *fname) {
 	
@@ -301,10 +246,6 @@ char* compute_hash(char *fname) {
 	
 	// Compute hash
 	char *hash_val = hash(f);
-	//for (int i = 0; i < BLOCK_SIZE; i++) {
-	//	req_ptr->hash[i] = hash_val[i];
-	//}
-	//free(hash_val);
 	
 	// Close file
 	if (fclose(f) != 0) {
@@ -313,9 +254,10 @@ char* compute_hash(char *fname) {
 	}
 	return hash_val;
 }
-/* 
- */
 
+/* 
+ * Load the hash_val to struct req_ptr.
+ */
 void load_hash_request(char *hash_val, struct request *req_ptr) {
 	memcpy(req_ptr->hash, hash_val, BLOCK_SIZE);
 }
@@ -382,7 +324,6 @@ void rcopy_server(unsigned short port) {
     struct sockaddr_in q;
     fd_set allset;
     fd_set rset;
-    int i;
     int listenfd = bindandlisten();
     FD_ZERO(&allset);
     FD_SET(listenfd, &allset);
@@ -613,39 +554,39 @@ char *generate_path(char *fname, char *c_name) {
 	return path;
 }
 
-
-/*
- * Client writes a single string buf to correponding socket descriptor.
- * Note: this write includes writing the null terminator for a string
- */
-void client_write_str(int sock_fd, char *buf) {
-	int should_write = strlen(buf) + 1;
-	int num_written = write(sock_fd, buf, should_write);
-	if (num_written != should_write) {
-		perror("client: write");
-		close(sock_fd);
-		exit(1);
-	}
-}
-
-/*
- * Return a path for the root file/ or dir to start copy in the server side, 
- * based on the basename read from client.
- */
-char *server_generate_copy_root(int sock_fd) {
-	char basename[BUF_SIZE + 1];
-	fprintf(stderr, "read basename not start");
-	int num_read = read(sock_fd, &basename, BUF_SIZE);
-	fprintf(stderr, "read basename: %s\n", basename);
-	if (num_read == 0) {
-		perror("server: read");
-		close(sock_fd);
-		exit(1);
-	}
-	char *path = generate_path(CURRENT_WORKING_DIR, basename);
-	fprintf(stderr, "path in sgcr: %s\n", path);
-	return path;
-}
+// /*
+// /*
+//  * Client writes a single string buf to correponding socket descriptor.
+//  * Note: this write includes writing the null terminator for a string
+//  */
+// void client_write_str(int sock_fd, char *buf) {
+// 	int should_write = strlen(buf) + 1;
+// 	int num_written = write(sock_fd, buf, should_write);
+// 	if (num_written != should_write) {
+// 		perror("client: write");
+// 		close(sock_fd);
+// 		exit(1);
+// 	}
+// }*/
+// 
+// /*
+//  * Return a path for the root file/ or dir to start copy in the server side, 
+//  * based on the basename read from client.
+//  */
+// char *server_generate_copy_root(int sock_fd) {
+// 	char basename[BUF_SIZE + 1];
+// 	fprintf(stderr, "read basename not start");
+// 	int num_read = read(sock_fd, &basename, BUF_SIZE);
+// 	fprintf(stderr, "read basename: %s\n", basename);
+// 	if (num_read == 0) {
+// 		perror("server: read");
+// 		close(sock_fd);
+// 		exit(1);
+// 	}
+// 	char *path = generate_path(CURRENT_WORKING_DIR, basename);
+// 	fprintf(stderr, "path in sgcr: %s\n", path);
+// 	return path;
+// }
 
 /*
  * A FSM to load info from client for a corresponding file or directory based
@@ -709,16 +650,17 @@ int handleclient(struct client *p, struct client *top) {
 		}
 		p->req.size = ntohl(p->req.size);
 		
-		
 		switch (p->req.type) {
 		case REGFILE: {
 			check_REGFILE(p);
 			p->status = AWAITING_TYPE;
 		} break;
+		
 		case REGDIR: {
 			check_REGDIR(p);
 			p->status = AWAITING_TYPE;
 		} break;
+		
 		case TRANSFILE: {
 			p->status = AWAITING_DATA;
 			if ((p->fp = fopen(p->req.path, "w")) == NULL) {
@@ -738,7 +680,12 @@ int handleclient(struct client *p, struct client *top) {
 	return 0;
 }
 
+/*
+ * Server side sends response of the request from a regular file.
+ */
 void check_REGFILE(struct client *p) {
+	
+	// Check whether here is a same local copy for the given reg file
 	int response;
 	int result;
 	if ((result = need_send_file(p)) == 0) { // need
@@ -760,6 +707,7 @@ void check_REGFILE(struct client *p) {
 }
 
 /*
+ * Return whether we need to send a file, i.e. do the real copy.
  * 0 for need, 1 for not, -1 for error
  */
 int need_send_file(struct client *p) {
@@ -800,38 +748,12 @@ int need_send_file(struct client *p) {
 	return 1;
 }
 
+/*
+ * Server side handles the request from a regular directory.
+ */
 void check_REGDIR(struct client *p) {
 	EPRINTF("%s %04o\n", p->req.path, p->req.mode);
-// // 	int exist;
-// 	DIR* dir = opendir("mydir");
-// 	if (dir)
-// 	{
-// 		if (chmod(p->req.path, p->req.mode) != 0) {
-// 			perror("chmod");
-// 			exit(1);
-// 		}
-// 		/* Directory exists. */
-// 		closedir(dir);
-// 	}
-// 	else if (ENOENT == errno)
-// 	{
-// // 		if (exist < 0) {
-// 		if (mkdir(p->req.path, p->req.mode) != 0) {
-// 			perror("server: mkdir");
-// 			exit(1);
-// 		}
-// // 		if (chmod(p->req.path, p->req.mode) != 0) {
-// // 			perror("chmod");
-// // 			exit(1);
-// // 		}
-// 	
-//     /* Directory does not exist. */
-// 	}
-// 	else
-// 	{
-//     /* opendir() failed for some other reason. */
-// 	}
-// 	
+
 	//Check existence
 	struct stat local_stat;
 	printf("before lstat\n");
@@ -839,6 +761,7 @@ void check_REGDIR(struct client *p) {
 	printf("after lstat\n");
 	printf("%s\n", p->req.path);
 	
+	// Dir does not exist, make a new dir in the local
 	if (exist < 0) {
 		if (mkdir(p->req.path, p->req.mode) != 0) {
 			perror("server: mkdir");
@@ -846,27 +769,32 @@ void check_REGDIR(struct client *p) {
 		}
 	}
 	
+	// change the mode of existing local copy, regardless whether match or 
+	// mismatch with the one at client side
 	if (chmod(p->req.path, p->req.mode) != 0) {
 			perror("chmod");
 			exit(1);
 		}
-		/* Directory exists. */
-
 }
 
+/*
+ * Transmit data of the client side file to server side.
+ */
 int process_data(struct client *p) {
+	
+	// Read data from client
 	char buf[MAXDATA];
 	int num_read = read(p->fd, buf, MAXDATA);
 	if (num_read == 0) {
 		fclose(p->fp);
 		return -1;
 	}
-	
 	if(num_read < 0) {
 		perror("server: process data");
 		return -1;
 	}
 
+	// Write to local copy
 	if ((fwrite(buf, sizeof(char), num_read, p->fp)) != num_read) {
 		perror("fwrite");
 		return -1;

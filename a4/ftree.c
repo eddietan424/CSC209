@@ -39,6 +39,7 @@ struct client {
 	struct in_addr ipaddr;
 	int status;
 	struct client *next;
+	FILE* fp;
 };
 
 int accept_connection(int fd);
@@ -80,6 +81,34 @@ int process_data(struct client *p);
 //     printf("relative path: %s\n", new_path);
 // 	
 // }
+int socket_connect(char *host, unsigned short port) {
+	int sock_fd;
+	struct hostent *hp;
+	struct sockaddr_in peer;
+
+	peer.sin_family = AF_INET;
+	peer.sin_port = htons(port);
+
+	/* fill in peer address */
+	hp = gethostbyname(host);                
+	if (hp == NULL) {  
+		fprintf(stderr, "%s: unknown host\n", host);
+		exit(1);
+	}
+
+	peer.sin_addr = *((struct in_addr *)hp->h_addr);
+
+	/* create socket */
+	if((sock_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+		perror("socket");
+	}
+	/* request connection to server */
+	if (connect(sock_fd, (struct sockaddr *)&peer, sizeof(peer)) == -1) {  
+		perror("client:connect"); close(sock_fd);
+		exit(1); 
+	}
+	return sock_fd;
+}
 
 int rcopy_client(char *source, char *host, unsigned short port) {
 	
@@ -115,32 +144,7 @@ int rcopy_client(char *source, char *host, unsigned short port) {
 // 		perror("client: connect");
 // 		close(sock_fd); /* fill in peer address */
 // 	}
-	
-	int sock_fd;
-	struct hostent *hp;
-    struct sockaddr_in peer;
-
-    peer.sin_family = AF_INET;
-    peer.sin_port = htons(port);
-
-    /* fill in peer address */
-    hp = gethostbyname(host);                
-    if (hp == NULL) {  
-        fprintf(stderr, "%s: unknown host\n", host);
-        exit(1);
-    }
-
-    peer.sin_addr = *((struct in_addr *)hp->h_addr);
-
-    /* create socket */
-    if((sock_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
-		perror("socket");
-	}
-    /* request connection to server */
-    if (connect(sock_fd, (struct sockaddr *)&peer, sizeof(peer)) == -1) {  
-        perror("client:connect"); close(sock_fd);
-        exit(1); 
-    }
+	int sock_fd = socket_connect(host, port);
     
 	char *basename = extract_name(source);
 // 	char *relative_path;
@@ -232,10 +236,10 @@ int rcopy_client_body(char *source, char* host, unsigned short port, int sock_fd
 			exit(1);
 		}
 		
-		switch (request_status) {
-		case ERROR:
-		{perror("request");}
-			break;
+		switch (ntohl(request_status)) {
+		case ERROR: {
+			perror("request");
+		} break;
 		case OK: break;
 		case SENDFILE: {
 			info->type = TRANSFILE;
@@ -257,29 +261,8 @@ void sendfile(char *source, char *host, unsigned short port, struct request *inf
 	
 	// child process: we need to transfer the file.
 	else if (result == 0) {
-		int child_socket = socket(AF_INET, SOCK_STREAM, 0);
-		
-		// error check.
-		if (child_socket < 0) {
-			perror("socket");
-			exit(1);
-		}
-		
-		struct sockaddr_in server;
-		server.sin_family = AF_INET;
-		server.sin_port = htons(port);
-		
-		if (inet_pton(AF_INET, host, &server.sin_addr) < 1) {
-			perror("client: inet_pton");
-			close(child_socket);
-		} 
-		
-		if (connect(child_socket, (struct sockaddr *)&server, sizeof(server)) < 0) {
-			perror("client: connect");
-			close(child_socket);
-			exit(1);
-		}
-		
+		int child_socket = socket_connect(host, port);
+		EPRINTF("%s\n", source);
 		client_write_fields(child_socket, info);
 		
 		FILE* fp = fopen(source, "r");
@@ -385,46 +368,39 @@ void client_write_fields(int sock_fd, struct request *req_ptr) {
 	}
 }
 
+/*
+ * Server side at port to do the copy.
+ * Note: we reuse some of lecture codes for simpleselect.c
+ */
 void rcopy_server(unsigned short port) {
+	
+	// Basic declaration for settings of further use
     int clientfd, maxfd, nready;
     struct client *p;
     struct client *head = NULL;
     socklen_t len;
     struct sockaddr_in q;
-//     struct timeval tv;
     fd_set allset;
     fd_set rset;
-
     int i;
-
     int listenfd = bindandlisten();
-    // initialize allset and add listenfd to the
-    // set of file descriptors passed into select
     FD_ZERO(&allset);
     FD_SET(listenfd, &allset);
+	
     // maxfd identifies how far into the set to search
     maxfd = listenfd;
 
     while (1) {
+		
         // make a copy of the set before we pass it into select
         rset = allset;
-        /* timeout in seconds (You may not need to use a timeout for
-        * your assignment)*/
-//         tv.tv_sec = 10;
-//         tv.tv_usec = 0;  /* and microseconds */
-
+		
+		// Do the select and corresponding connection
         nready = select(maxfd + 1, &rset, NULL, NULL, NULL);
-//         if (nready == 0) {
-//             printf("No response from clients in %ld seconds\n", tv.tv_sec);
-//             continue;
-//         }
-//         printf("Time says %ld seconds\n", tv.tv_sec);
-
         if (nready == -1) {
             perror("select");
             continue;
         }
-
         if (FD_ISSET(listenfd, &rset)){
             printf("a new client is connecting\n");
             len = sizeof(q);
@@ -440,27 +416,25 @@ void rcopy_server(unsigned short port) {
             head = addclient(head, clientfd, q.sin_addr);
         }
 
-        for(i = 0; i <= maxfd; i++) {
-            if (FD_ISSET(i, &rset)) {
-                for (p = head; p != NULL; p = p->next) {
-                    if (p->fd == i) {
-                        int result = handleclient(p, head);
-                        if (result == -1) {
-                            int tmp_fd = p->fd;
-                            head = removeclient(head, p->fd);
-                            FD_CLR(tmp_fd, &allset);
-                            close(tmp_fd);
-                        }
-                        break;
-                    }
-                }
-            }
+        // Update the linked list of clients and do the copy
+		for (p = head; p != NULL; p = p->next) {
+			if (FD_ISSET(p->fd, &rset)) {
+				int result = handleclient(p, head);
+				if (result == -1) {
+					int tmp_fd = p->fd;
+					head = removeclient(head, p->fd);
+					FD_CLR(tmp_fd, &allset);
+					close(tmp_fd);
+				}
+				break;
+			}
         }
     }
 }
 
- /* bind and listen, abort on error
+ /* Bind and listen, abort on error.
   * returns FD of listening socket
+  * Note: we reuse some of lecture codes for simpleselect.c
   */
 int bindandlisten(void) {
     struct sockaddr_in r;
@@ -491,15 +465,18 @@ int bindandlisten(void) {
     return listenfd;
 }
 
+/*
+ * Add a struct client to a linked list of clients, whose head is top.
+ */
 static struct client *addclient(struct client *top, int fd, struct in_addr addr) {
     struct client *p = malloc(sizeof(struct client));
     if (!p) {
         perror("malloc");
         exit(1);
     }
-
     printf("Adding client %s\n", inet_ntoa(addr));
 
+	// Initialize fields
     p->fd = fd;
     p->ipaddr = addr;
     p->next = top;
@@ -508,11 +485,13 @@ static struct client *addclient(struct client *top, int fd, struct in_addr addr)
     return top;
 }
 
+/*
+ * Remove a struct client from a linked list of clients, whose head is top.
+ */
 static struct client *removeclient(struct client *top, int fd) {
     struct client **p;
-
-    for (p = &top; *p && (*p)->fd != fd; p = &(*p)->next)
-        ;
+    for (p = &top; *p && (*p)->fd != fd; p = &(*p)->next);
+	
     // Now, p points to (1) top, or (2) a pointer to another client
     // This avoids a special case for removing the head of the list
     if (*p) {
@@ -521,8 +500,8 @@ static struct client *removeclient(struct client *top, int fd) {
         free(*p);
         *p = t;
     } else {
-        fprintf(stderr, "Trying to remove fd %d, but I don't know about it\n",
-                 fd);
+        fprintf(stderr, 
+				"Trying to remove fd %d, but I don't know about it\n", fd);
     }
     return top;
 }
@@ -669,11 +648,18 @@ char *server_generate_copy_root(int sock_fd) {
 }
 
 /*
- * Server loads all fields.
+ * A FSM to load info from client for a corresponding file or directory based
+ * on how much fields or data we have already read in teh server side.
+ * (Our order here to load fields is inconsistent of the order mentioned in 
+ * the hhandout)
  */
 int handleclient(struct client *p, struct client *top) {
 	EPRINTF("%d %d\n", p->fd, p->status);
+	
+	// Do the transition based on current loading status
 	switch (p->status) {
+		
+	// Wait to load type field
 	case AWAITING_TYPE: {
 		int nbytes = read(p->fd, &(p->req.type), sizeof(int));
 		if (nbytes == 0) {
@@ -686,6 +672,8 @@ int handleclient(struct client *p, struct client *top) {
 		p->req.type = ntohl(p->req.type);
 		p->status = AWAITING_PATH;
 	} break;
+	
+	// Wait to load path field
 	case AWAITING_PATH: {
 		if (read(p->fd, p->req.path, MAXPATH) != MAXPATH){
 			perror("server: load path");
@@ -694,6 +682,8 @@ int handleclient(struct client *p, struct client *top) {
 		EPRINTF("%.*s\n", MAXPATH, p->req.path);
 		p->status = AWAITING_PERM;
 	} break;
+	
+	// wait to load mode field
 	case AWAITING_PERM: {
 		if (read(p->fd, &p->req.mode, sizeof(mode_t)) != sizeof(mode_t)){
 			perror("server: load mode");
@@ -701,6 +691,8 @@ int handleclient(struct client *p, struct client *top) {
 		}
 		p->status = AWAITING_HASH;
 	} break;
+	
+	// Wait to load hash field
 	case AWAITING_HASH: {
 		if (read(p->fd, p->req.hash, BLOCK_SIZE) != BLOCK_SIZE){
 			perror("server: load hash");
@@ -708,12 +700,16 @@ int handleclient(struct client *p, struct client *top) {
 		}
 		p->status = AWAITING_SIZE;
 	} break;
+	
+	// Wait to load size 
 	case AWAITING_SIZE: {
 		if (read(p->fd, &p->req.size, sizeof(int)) != sizeof(int)){
 			perror("rcopy_server: read client SIZE");
 			return -1;
 		}
 		p->req.size = ntohl(p->req.size);
+		
+		
 		switch (p->req.type) {
 		case REGFILE: {
 			check_REGFILE(p);
@@ -725,9 +721,15 @@ int handleclient(struct client *p, struct client *top) {
 		} break;
 		case TRANSFILE: {
 			p->status = AWAITING_DATA;
+			if ((p->fp = fopen(p->req.path, "w")) == NULL) {
+				perror("server: fopen");
+				return -1;
+			}
 		} break;
 		}
 	} break;
+	
+	// Wait to do the real copy
 	case AWAITING_DATA: {
 		return process_data(p);
 	} default: // should not get here
@@ -853,27 +855,20 @@ void check_REGDIR(struct client *p) {
 }
 
 int process_data(struct client *p) {
-	if (p->req.size == 0) {
-		return 0;
-	}
-	
-	FILE *f;
-	if ((f = fopen(p->req.path, "w")) == NULL) {
-		perror("server: fopen");
+	char buf[MAXDATA];
+	int num_read = read(p->fd, buf, MAXDATA);
+	if (num_read == 0) {
+		fclose(p->fp);
 		return -1;
 	}
-	char buf[MAXDATA];
-	int num_read;
-	if ((num_read = read(p->fd, buf, MAXDATA)) <= 0) {
+	
+	if(num_read < 0) {
 		perror("server: process data");
 		return -1;
 	}
 
-	if ((fwrite(buf, sizeof(char), num_read, f)) != num_read) {
+	if ((fwrite(buf, sizeof(char), num_read, p->fp)) != num_read) {
 		perror("fwrite");
-		return -1;
-	}
-	if (fclose(f) != 0) {
 		return -1;
 	}
 	

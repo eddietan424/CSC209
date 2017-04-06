@@ -25,15 +25,15 @@
 #define ERROR 2
 
 #ifndef PORT
-    #define PORT 30100
+#define PORT 30100
 #endif
 
 struct request {
-    int type;           // Request type is REGFILE, REGDIR, TRANSFILE
-    char path[MAXPATH];
-    mode_t mode;
-    char hash[BLOCK_SIZE];
-    int size;
+	int type;           // Request type is REGFILE, REGDIR, TRANSFILE
+	char path[MAXPATH];
+	mode_t mode;
+	char hash[BLOCK_SIZE];
+	int size;
 };
 
 int rcopy_client(char *source, char *host, unsigned short port);

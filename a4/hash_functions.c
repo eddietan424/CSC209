@@ -10,12 +10,12 @@
  */
 char *hash(FILE *f) {
 	char *hash_val = malloc(sizeof(char) * BLOCK_SIZE);
-	
+
 	// Initialization for hash_val
 	for (int i = 0; i < BLOCK_SIZE; i++) {
 		hash_val[i] = '\0';
 	}
-	
+
 	// Compute the hash of data provided by given file
 	char data = '\0';
 	int count = 0;
@@ -26,17 +26,17 @@ char *hash(FILE *f) {
 		hash_val[count] = hash_val[count] ^ data;
 		count++;
 	}
-	
+
 	// Return the result
 	return hash_val;
 }
 
 int check_hash(const char *hash1, const char *hash2) {
-    for (long i = 0; i < BLOCK_SIZE; i++) {
-        if (hash1[i] != hash2[i]) {
-            printf("Index %ld: %c\n", i, hash1[i]);
-            return 1;
-        }
-    }
-    return 0;
+	for (long i = 0; i < BLOCK_SIZE; i++) {
+		if (hash1[i] != hash2[i]) {
+			printf("Index %ld: %c\n", i, hash1[i]);
+			return 1;
+		}
+	}
+	return 0;
 }

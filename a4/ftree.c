@@ -16,19 +16,9 @@
 #include <netinet/in.h>    /* Internet domain header */
 #include <errno.h>
 #include <signal.h>
+
 #include "ftree.h"
 #include "hash.h"
-
-#define CURRENT_WORKING_DIR "./"
-
-#if 0
-#define EPRINTF(...) ((void)0)
-#else
-#define EPRINTF(...) do{\
-	fprintf(stderr, "[[ %d ]] ", __LINE__); \
-	fprintf(stderr, __VA_ARGS__);\
-	}while(0)
-#endif
 
 /*
  * Structure for client side file.
@@ -42,71 +32,38 @@ struct client {
 	FILE* fp; // correponding server side file open for writing
 };
 
-int accept_connection(int fd);
-char *extract_name(char *fname);
-char *str_copy(char* src);
-char *generate_path(char *fname, char *c_name);
-// void client_write_str(int sock_fd, char *buf);
-// char *server_generate_copy_root(int sock_fd);
-char *compute_hash(char *fname);
-void client_write_fields(int sock_fd, struct request *req_ptr);
-void server_read_fields(int client_fd, struct request *rreq_ptr);
-void sendfile(char *source, char *host, unsigned short port,
-		struct request *info);
-void load_hash_request(char *hash_val, struct request *req_ptr);
+/* Client side helper functions.*/
 int rcopy_client_body(char *source, char* host, unsigned short port,
-		int sock_fd);
+					  int sock_fd);
+int socket_connect(char *host, unsigned short port);
+void client_write_fields(int sock_fd, struct request *req_ptr);
+void sendfile(char *source, char *host, unsigned short port,
+			  struct request *info);
+void load_hash_request(char *hash_val, struct request *req_ptr);
 
+/* Server side helper functions.*/
+int accept_connection(int fd);
 int bindandlisten(void);
 static struct client *addclient(struct client *top, int fd, struct in_addr addr);
 static struct client *removeclient(struct client *top, int fd);
 int handleclient(struct client *p, struct client *top);
+void server_read_fields(int client_fd, struct request *rreq_ptr);
 void check_REGFILE(struct client *p);
 int need_send_file(struct client *p);
 void check_REGDIR(struct client *p);
 int process_data(struct client *p);
 
-/*
- * Set up socket connection.
- * Note: reuse part of lecture codes
- */
-int socket_connect(char *host, unsigned short port) {
-	int sock_fd;
-	struct hostent *hp;
-	struct sockaddr_in peer;
-
-	peer.sin_family = AF_INET;
-	peer.sin_port = htons(port);
-
-	/* fill in peer address */
-	hp = gethostbyname(host);
-	if (hp == NULL) {
-		fprintf(stderr, "%s: unknown host\n", host);
-		exit(1);
-	}
-
-	peer.sin_addr = *((struct in_addr *) hp->h_addr);
-
-	/* create socket */
-	if ((sock_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
-		perror("socket");
-	}
-	/* request connection to server */
-	if (connect(sock_fd, (struct sockaddr *) &peer, sizeof(peer)) == -1) {
-		perror("client:connect");
-		close(sock_fd);
-		exit(1);
-	}
-	return sock_fd;
-}
+/* Geneneral helper functions.*/
+char *compute_hash(char *fname);
+char *extract_name(char *fname);
+char *str_copy(char* src);
+char *generate_path(char *fname, char *c_name);
 
 /* 
  * Client side for the rcopy program.
  */
 int rcopy_client(char *source, char *host, unsigned short port) {
-
 	int sock_fd = socket_connect(host, port);
-
 	char *basename = extract_name(source);
 	int r = rcopy_client_body(basename, host, port, sock_fd);
 	close(sock_fd);
@@ -145,10 +102,9 @@ int rcopy_client_body(char *source, char* host, unsigned short port,
 		// write to server.
 		client_write_fields(sock_fd, info);
 
+		// Open dir and do error checking
 		struct dirent *dp;
 		DIR * dirp = opendir(source);
-
-		//Check for open.
 		if (dirp == NULL) {
 			perror("opendir");
 			exit(1);
@@ -196,126 +152,6 @@ int rcopy_client_body(char *source, char* host, unsigned short port,
 	free(info);
 	return 0;
 
-}
-
-/*
- * Send the information about file at source to a pointer to request.
- */
-void sendfile(char *source, char *host, unsigned short port,
-		struct request *info) {
-	int result = fork();
-	if (result < 0) {
-		perror("fork");
-		exit(1);
-	}
-
-	// child process: we need to transfer the file.
-	else if (result == 0) {
-		int child_socket = socket_connect(host, port);
-		EPRINTF("%s\n", source);
-		client_write_fields(child_socket, info);
-
-		FILE* fp = fopen(source, "r");
-
-		// read the fp to buf.
-		char buf[MAXDATA];
-		int num_read;
-		while ((num_read = fread(buf, 1, MAXDATA, fp)) > 0) {
-			if (write(child_socket, buf, num_read) != num_read) {
-				perror("write");
-				exit(1);
-			}
-
-		}
-		close(child_socket);
-
-		// Parent process: wait for child
-	} else if (result > 0) {
-		int status;
-		if (wait(&status) == -1) {
-			perror("wait");
-			exit(1);
-		}
-	}
-}
-
-/*
- * Compute the hash for file at path fname.
- * Precondition: fname is a valid path for a file.
- */
-char* compute_hash(char *fname) {
-
-	// Open file
-	FILE *f;
-	if ((f = fopen(fname, "rb")) == NULL) {
-		perror(fname);
-		exit(1);
-	}
-
-	// Compute hash
-	char *hash_val = hash(f);
-
-	// Close file
-	if (fclose(f) != 0) {
-		perror(fname);
-		exit(1);
-	}
-	return hash_val;
-}
-
-/* 
- * Load the hash_val to struct req_ptr.
- */
-void load_hash_request(char *hash_val, struct request *req_ptr) {
-	memcpy(req_ptr->hash, hash_val, BLOCK_SIZE);
-}
-
-/*
- * Client writes all fields of request at req_ptr to a socket descriptor.
- */
-void client_write_fields(int sock_fd, struct request *req_ptr) {
-	EPRINTF("\n");
-	// Write type
-	int neto_type = htonl(req_ptr->type);
-	int num_written_type = write(sock_fd, &neto_type, sizeof(int));
-	if (num_written_type != sizeof(int)) {
-		perror("client: write type");
-		close(sock_fd);
-		exit(1);
-	}
-
-	// Write path
-	int num_written_path = write(sock_fd, req_ptr->path, MAXPATH);
-	if (num_written_path != MAXPATH) {
-		perror("client: write path");
-		close(sock_fd);
-		exit(1);
-	}
-
-	// Write mode
-	int num_written_mode = write(sock_fd, &(req_ptr->mode), sizeof(mode_t));
-	if (num_written_mode != sizeof(mode_t)) {
-		perror("client: write mode");
-		close(sock_fd);
-		exit(1);
-	}
-
-	// Write hash
-	int num_written_hash = write(sock_fd, req_ptr->hash, BLOCK_SIZE);
-	if (num_written_hash != BLOCK_SIZE) {
-		perror("client: write hash");
-		close(sock_fd);
-		exit(1);
-	}
-
-	// Write size
-	int neto_size = htonl(req_ptr->size);
-	int num_written_size = write(sock_fd, &neto_size, sizeof(int));
-	if (num_written_size != sizeof(int)) {
-		perror("client: write size");
-		close(sock_fd);
-		exit(1);
-	}
 }
 
 /*
@@ -382,6 +218,147 @@ void rcopy_server(unsigned short port) {
 	}
 }
 
+/*
+ * Set up socket connection.
+ * Note: reuse part of lecture codes
+ */
+int socket_connect(char *host, unsigned short port) {
+	int sock_fd;
+	struct hostent *hp;
+	struct sockaddr_in peer;
+
+	peer.sin_family = AF_INET;
+	peer.sin_port = htons(port);
+
+	/* fill in peer address */
+	hp = gethostbyname(host);
+	if (hp == NULL) {
+		fprintf(stderr, "%s: unknown host\n", host);
+		exit(1);
+	}
+
+	peer.sin_addr = *((struct in_addr *) hp->h_addr);
+
+	/* create socket */
+	if ((sock_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+		perror("socket");
+	}
+	/* request connection to server */
+	if (connect(sock_fd, (struct sockaddr *) &peer, sizeof(peer)) == -1) {
+		perror("client:connect");
+		close(sock_fd);
+		exit(1);
+	}
+	return sock_fd;
+}
+
+/*
+ * Send the information about file at source to a pointer to request.
+ */
+void sendfile(char *source, char *host, unsigned short port,
+		struct request *info) {
+	int result = fork();
+	if (result < 0) {
+		perror("fork");
+		exit(1);
+	}
+
+	// child process: we need to transfer the file.
+	else if (result == 0) {
+		int child_socket = socket_connect(host, port);
+		client_write_fields(child_socket, info);
+
+		FILE* fp = fopen(source, "r");
+		if (fp == NULL) {
+			perror("fopen");
+			exit(1);
+		}
+		
+		// read the fp to buf.
+		char buf[MAXDATA];
+		int num_read;
+		while ((num_read = fread(buf, 1, MAXDATA, fp)) > 0) {
+			if (write(child_socket, buf, num_read) != num_read) {
+				perror("write");
+				exit(1);
+			}
+
+		}
+		close(child_socket);
+
+		// Parent process: wait for child
+	} else if (result > 0) {
+		int status;
+		if (wait(&status) == -1) {
+			perror("wait");
+			exit(1);
+		}
+	}
+}
+
+/*
+ * Client writes all fields of request at req_ptr to a socket descriptor.
+ */
+void client_write_fields(int sock_fd, struct request *req_ptr) {
+	
+	// Write type
+	int neto_type = htonl(req_ptr->type);
+	int num_written_type = write(sock_fd, &neto_type, sizeof(int));
+	if (num_written_type != sizeof(int)) {
+		perror("client: write type");
+		close(sock_fd);
+		exit(1);
+	}
+
+	// Write path
+	int num_written_path = write(sock_fd, req_ptr->path, MAXPATH);
+	if (num_written_path != MAXPATH) {
+		perror("client: write path");
+		close(sock_fd);
+		exit(1);
+	}
+
+	// Write mode
+	int num_written_mode = write(sock_fd, &(req_ptr->mode), sizeof(mode_t));
+	if (num_written_mode != sizeof(mode_t)) {
+		perror("client: write mode");
+		close(sock_fd);
+		exit(1);
+	}
+
+	// Write hash
+	int num_written_hash = write(sock_fd, req_ptr->hash, BLOCK_SIZE);
+	if (num_written_hash != BLOCK_SIZE) {
+		perror("client: write hash");
+		close(sock_fd);
+		exit(1);
+	}
+
+	// Write size
+	int neto_size = htonl(req_ptr->size);
+	int num_written_size = write(sock_fd, &neto_size, sizeof(int));
+	if (num_written_size != sizeof(int)) {
+		perror("client: write size");
+		close(sock_fd);
+		exit(1);
+	}
+}
+
+/* Accept a connection. Note that a new file descriptor is created for
+ * communication with the client. The initial socket descriptor is used
+ * to accept connections, but the new socket is used to communicate.
+ * Return the new client's file descriptor.
+ */
+int accept_connection(int fd) {
+	int client_fd = accept(fd, NULL, NULL);
+	if (client_fd < 0) {
+		perror("server: accept");
+		close(fd);
+		exit(1);
+	}
+	return client_fd;
+}
+
 /* Bind and listen, abort on error.
  * returns FD of listening socket
  * Note: we reuse some of lecture codes for simpleselect.c
@@ -430,6 +407,7 @@ static struct client *addclient(struct client *top, int fd, struct in_addr addr)
 	// Initialize fields
 	p->fd = fd;
 	p->ipaddr = addr;
+	p->fp = NULL;
 	p->next = top;
 	p->status = AWAITING_TYPE;
 	top = p;
@@ -458,114 +436,6 @@ static struct client *removeclient(struct client *top, int fd) {
 	return top;
 }
 
-/* Accept a connection. Note that a new file descriptor is created for
- * communication with the client. The initial socket descriptor is used
- * to accept connections, but the new socket is used to communicate.
- * Return the new client's file descriptor.
- */
-int accept_connection(int fd) {
-	int client_fd = accept(fd, NULL, NULL);
-	if (client_fd < 0) {
-		perror("server: accept");
-		close(fd);
-		exit(1);
-	}
-	return client_fd;
-}
-
-/*
- * Extract the basename part in the path fname and return that name.
- * Note: reuse part of my A3 helper function extract_name
- *
- * Precondition: fname is a valid path
- */
-char *extract_name(char *fname) {
-
-	// If fname does not have slash, itself is already a basename
-	char *first_occur = strchr(fname, '/');
-	if (first_occur == NULL) {
-		return str_copy(fname);
-	}
-
-	// Deal with the path that has slash(es)
-	char *result = NULL;
-	char *temp = str_copy(fname);
-
-	// Get rid of trailing slash(es) except when it occurs also as the
-	// first character in the path
-	int j = strlen(fname) - 1;
-	while (j > 0 && temp[j] == '/') {
-		temp[j] = '\0';
-		j--;
-	}
-
-	// Mark the start of the basename part in path temp
-	char *name_start = strrchr(temp, '/');
-	if (name_start == NULL) {
-		name_start = temp;
-	} else if (name_start[1] != '\0') {
-		name_start += 1;
-	}
-	result = str_copy(name_start);
-
-	// Free memory of no further use and return result
-	free(temp);
-	return result;
-}
-
-/*
- * Return a copy of given source string src.
- * Note: reuse part of my A3 helper function str_copy
- */
-char *str_copy(char* src) {
-	int length = strlen(src);
-	char *result = malloc(sizeof(char) * (length + 1));
-	memcpy(result, src, length);
-	result[length] = '\0';
-	return result;
-}
-
-/*
- * Return the path for a child directory or file using the path of its parent
- * directory and the name of that child directory/ file.
- *
- * Precondition: fname is a valid path representing a directory
- * Note: reuse A3 generate_path function
- */
-char *generate_path(char *fname, char *c_name) {
-
-	// Allocate memory for path
-	int p_size = sizeof(char) * (strlen(fname) + strlen(c_name) + 2);
-	char *path = malloc(p_size);
-
-	// Make path a string so that we can use string operations
-	path[0] = '\0';
-
-	// We have allocated enough memory, so we don't need
-	// to use strncpy and strncat here
-	// And we also deal with the trailing slashes for path fname
-	strcpy(path, fname);
-	int i = strlen(fname) - 1;
-	while (i > 0 && path[i] == '/') {
-		path[i] = '\0';
-		i--;
-	}
-
-	// If parent dir is root directory for the OS, i.e. now what is already
-	// concatenated to the path is a single /,
-	// then we don't need to concatenate slash any more
-	if (path[strlen(path) - 1] != '/') {
-		strcat(path, "/");
-	}
-
-	// strcat ensures null terminator and we allocated enough memory
-	strcat(path, c_name);
-
-	// Return the path
-	return path;
-}
-
-
 /*
  * A FSM to load info from client for a corresponding file or directory based
  * on how much fields or data we have already read in teh server side.
@@ -573,7 +443,6 @@ char *generate_path(char *fname, char *c_name) {
  * the hhandout)
  */
 int handleclient(struct client *p, struct client *top) {
-	EPRINTF("%d %d\n", p->fd, p->status);
 
 	// Do the transition based on current loading status
 	switch (p->status) {
@@ -599,7 +468,6 @@ int handleclient(struct client *p, struct client *top) {
 			perror("server: load path");
 			return -1;
 		}
-		EPRINTF("%.*s\n", MAXPATH, p->req.path);
 		p->status = AWAITING_PERM;
 	}
 		break;
@@ -739,14 +607,10 @@ int need_send_file(struct client *p) {
  * Server side handles the request from a regular directory.
  */
 void check_REGDIR(struct client *p) {
-	EPRINTF("%s %04o\n", p->req.path, p->req.mode);
 
 	//Check existence
 	struct stat local_stat;
-	printf("before lstat\n");
 	int exist = lstat(p->req.path, &local_stat);
-	printf("after lstat\n");
-	printf("%s\n", p->req.path);
 
 	// Dir does not exist, make a new dir in the local
 	if (exist < 0) {
@@ -788,4 +652,127 @@ int process_data(struct client *p) {
 	}
 
 	return 0;
+}
+
+/*
+ * Compute the hash for file at path fname.
+ * Precondition: fname is a valid path for a file.
+ */
+char* compute_hash(char *fname) {
+
+	// Open file
+	FILE *f;
+	if ((f = fopen(fname, "rb")) == NULL) {
+		perror(fname);
+		exit(1);
+	}
+
+	// Compute hash
+	char *hash_val = hash(f);
+
+	// Close file
+	if (fclose(f) != 0) {
+		perror(fname);
+		exit(1);
+	}
+	return hash_val;
+}
+
+/* 
+ * Load the hash_val to struct req_ptr.
+ */
+void load_hash_request(char *hash_val, struct request *req_ptr) {
+	memcpy(req_ptr->hash, hash_val, BLOCK_SIZE);
+}
+
+/*
+ * Extract the basename part in the path fname and return that name.
+ * Note: reuse part of my A3 helper function extract_name
+ *
+ * Precondition: fname is a valid path
+ */
+char *extract_name(char *fname) {
+
+	// If fname does not have slash, itself is already a basename
+	char *first_occur = strchr(fname, '/');
+	if (first_occur == NULL) {
+		return str_copy(fname);
+	}
+
+	// Deal with the path that has slash(es)
+	char *result = NULL;
+	char *temp = str_copy(fname);
+
+	// Get rid of trailing slash(es) except when it occurs also as the
+	// first character in the path
+	int j = strlen(fname) - 1;
+	while (j > 0 && temp[j] == '/') {
+		temp[j] = '\0';
+		j--;
+	}
+
+	// Mark the start of the basename part in path temp
+	char *name_start = strrchr(temp, '/');
+	if (name_start == NULL) {
+		name_start = temp;
+	} else if (name_start[1] != '\0') {
+		name_start += 1;
+	}
+	result = str_copy(name_start);
+
+	// Free memory of no further use and return result
+	free(temp);
+	return result;
+}
+
+/*
+ * Return a copy of given source string src.
+ * Note: reuse part of my A3 helper function str_copy
+ */
+char *str_copy(char* src) {
+	int length = strlen(src);
+	char *result = malloc(sizeof(char) * (length + 1));
+	memcpy(result, src, length);
+	result[length] = '\0';
+	return result;
+}
+
+/*
+ * Return the path for a child directory or file using the path of its parent
+ * directory and the name of that child directory/ file.
+ *
+ * Precondition: fname is a valid path representing a directory
+ * Note: reuse A3 generate_path function
+ */
+char *generate_path(char *fname, char *c_name) {
+
+	// Allocate memory for path
+	int p_size = sizeof(char) * (strlen(fname) + strlen(c_name) + 2);
+	char *path = malloc(p_size);
+
+	// Make path a string so that we can use string operations
+	path[0] = '\0';
+
+	// We have allocated enough memory, so we don't need
+	// to use strncpy and strncat here
+	// And we also deal with the trailing slashes for path fname
+	strcpy(path, fname);
+	int i = strlen(fname) - 1;
+	while (i > 0 && path[i] == '/') {
+		path[i] = '\0';
+		i--;
+	}
+
+	// If parent dir is root directory for the OS, i.e. now what is already
+	// concatenated to the path is a single /,
+	// then we don't need to concatenate slash any more
+	if (path[strlen(path) - 1] != '/') {
+		strcat(path, "/");
+	}
+
+	// strcat ensures null terminator and we allocated enough memory
+	strcat(path, c_name);
+
+	// Return the path
+	return path;
 }
